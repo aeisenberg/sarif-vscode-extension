@@ -8,7 +8,7 @@ import { CancellationToken, commands, DiagnosticSeverity, Disposable, ExtensionC
 import '../shared/extension';
 import { getOriginalDoc } from './getOriginalDoc';
 import { activateDecorations } from './index.activateDecorations';
-import { activateFixes } from './index.activateFixes';
+import { activateFixes, applyFix } from './index.activateFixes';
 import { activateGithubAnalyses } from './index.activateGithubAnalyses';
 import { activateGithubCommands } from './index.activateGithubCommands';
 import { loadLogs } from './loadLogs';
@@ -20,6 +20,8 @@ import { Store } from './store';
 import * as Telemetry from './telemetry';
 import { update, updateChannelConfigSection } from './update';
 import { UriRebaser } from './uriRebaser';
+import * as vscode from 'vscode';
+import * as sarif from 'sarif';
 
 export async function activate(context: ExtensionContext) {
     // Borrowed from: https://github.com/Microsoft/vscode-languageserver-node/blob/db0f0f8c06b89923f96a8a5aebc8a4b5bb3018ad/client/src/main.ts#L217
@@ -164,12 +166,16 @@ function activateDiagnostics(disposables: Disposable[], store: Store, baser: Uri
 
         const diags = matchingResults
             .map(result => {
-                return new ResultDiagnostic(
+                const diagnostic = new ResultDiagnostic(
                     driftedRegionToSelection(diffBlocks, currentDoc, result._region, originalDoc),
                     result._message ?? '—',
                     severities[result.level ?? ''] ?? DiagnosticSeverity.Information, // note, none, undefined.
                     result,
                 );
+                if (result.fixes?.length) {
+                    void applyFixes(result, baser, store);
+                }
+                return diagnostic;
             });
 
         diagsAll.set(doc.uri, diags);
@@ -181,6 +187,21 @@ function activateDiagnostics(disposables: Disposable[], store: Store, baser: Uri
 
     const disposerStore = observe(store, 'results', () => workspace.textDocuments.forEach(setDiags));
     disposables.push({ dispose: disposerStore });
+}
+
+async function applyFixes(result: sarif.Result, baser: UriRebaser, store: Store) {
+    if (!result.fixes?.length) {
+        return;
+    }
+
+    try {
+        // check that working directory is clean
+        // check that working directory is on the same commit as the SARIF file
+        await applyFix(result.fixes[0], result, baser, store);
+        await vscode.workspace.saveAll();
+    } catch (error) {
+        window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    }
 }
 
 // Sync Open SARIF TextDocuments with Store.logs

@@ -44,26 +44,7 @@ export function activateFixes(disposables: Disposable[], store: Pick<Store, 'ana
                 if (command) return undefined; // VS Code will execute the command on our behalf.
 
                 if (fix) {
-                    const edit = new WorkspaceEdit();
-                    for (const artifactChange of fix.artifactChanges) {
-                        const [uri, _uriContents] = parseArtifactLocation(result, artifactChange.artifactLocation);
-                        const artifactUri = uri;
-                        if (!artifactUri) continue;
-
-                        const localUri = await baser.translateArtifactToLocal(artifactUri);
-                        const currentDoc = await workspace.openTextDocument(Uri.parse(localUri, true /* Why true? */));
-                        const originalDoc = await getOriginalDoc(store.analysisInfo?.commit_sha, currentDoc);
-                        const diffBlocks = originalDoc ? diffChars(originalDoc.getText(), currentDoc.getText()) : [];
-
-                        for (const replacement of artifactChange.replacements) {
-                            edit.replace(
-                                Uri.parse(localUri),
-                                driftedRegionToSelection(diffBlocks, currentDoc, replacement.deletedRegion, originalDoc),
-                                replacement.insertedContent?.text ?? '',
-                            );
-                        }
-                    }
-                    workspace.applyEdit(edit);
+                    await applyFix(fix, result, baser, store);
                 }
 
                 store.resultsFixed.push(JSON.stringify(result._id));
@@ -95,4 +76,27 @@ class DismissCodeAction extends CodeAction {
             arguments: [{ resultId: JSON.stringify(result._id) }],
         };
     }
+}
+
+export async function applyFix(fix: Fix, result: Result, baser: UriRebaser, store: Pick<Store, 'resultsFixed' | 'analysisInfo'>) {
+    const edit = new WorkspaceEdit();
+    for (const artifactChange of fix.artifactChanges) {
+        const [uri] = parseArtifactLocation(result, artifactChange.artifactLocation);
+        const artifactUri = uri;
+        if (!artifactUri) continue;
+
+        const localUri = await baser.translateArtifactToLocal(artifactUri);
+        const currentDoc = await workspace.openTextDocument(Uri.parse(localUri, true /* Why true? */));
+        const originalDoc = await getOriginalDoc(store.analysisInfo?.commit_sha, currentDoc);
+        const diffBlocks = originalDoc ? diffChars(originalDoc.getText(), currentDoc.getText()) : [];
+
+        for (const replacement of artifactChange.replacements) {
+            edit.replace(
+                Uri.parse(localUri),
+                driftedRegionToSelection(diffBlocks, currentDoc, replacement.deletedRegion, originalDoc),
+                replacement.insertedContent?.text ?? ''
+            );
+        }
+    }
+    workspace.applyEdit(edit);
 }
